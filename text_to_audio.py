@@ -1722,40 +1722,23 @@ class TextToAudioConverter:
         # Check if already processed (unless force or slide generation is requested)
         # Also verify the output MP3 exists and is not empty — if it was deleted,
         # we need to regenerate it even if the progress file says it was processed.
-        # Additionally, check if any individual audio segments are missing — if so,
-        # we must re-run incremental generation to fill the gaps.
+        # Note: we don't check for missing individual segments here because
+        # convert_file_incremental does a thorough check and only regenerates
+        # what's actually missing, without wasting API calls.
         output_exists = output_path.exists() and output_path.stat().st_size > 0
         
-        # Quick check for missing audio segments (only relevant for incremental mode)
-        has_missing_segments = False
         if abs_path in self.processed_files and not force and not slide_generator and output_exists:
-            if HashManager is not None:
-                seg_prefix = output_path.stem
-                seg_audio_dir = input_path.parent / "audio"
-                # Check cover segment
-                cover_seg = seg_audio_dir / f"{seg_prefix}_slide_001.mp3"
-                if not cover_seg.exists() or cover_seg.stat().st_size == 0:
-                    has_missing_segments = True
-                    print(f"  ⚠️ Missing cover segment: {cover_seg.name}")
-                # Check paragraph segments by counting existing files
-                if not has_missing_segments and seg_audio_dir.exists():
-                    existing_count = sum(
-                        1 for f in seg_audio_dir.glob(f"{seg_prefix}_slide_*.mp3")
-                        if f.stat().st_size > 0 and f.name != cover_seg.name
-                    )
-                    # Need at least 1 paragraph segment (cover + paragraphs)
-                    if existing_count < 1:
-                        has_missing_segments = True
-                        print(f"  ⚠️ No paragraph segments found in {seg_audio_dir}")
-        
-        if abs_path in self.processed_files and not force and not slide_generator and output_exists and not has_missing_segments:
-            # Try to get relative path, fallback to name if structure depth differs
-            try:
-                rel_path = input_path.relative_to(input_path.parents[-2])
-            except ValueError:
-                rel_path = input_path.name
-            print(f"⊘ Skipping (already processed): {rel_path}")
-            return
+            # For incremental mode, always proceed to convert_file_incremental
+            # which checks for missing segments and only regenerates what's needed.
+            # For slide mode, skip (slide mode has its own manifest-based check).
+            if not (HashManager is not None and AudioFragmentManager is not None):
+                # Try to get relative path, fallback to name if structure depth differs
+                try:
+                    rel_path = input_path.relative_to(input_path.parents[-2])
+                except ValueError:
+                    rel_path = input_path.name
+                print(f"⊘ Skipping (already processed): {rel_path}")
+                return
         
         # Read text content
         with open(input_path, 'r', encoding='utf-8') as f:
@@ -2221,27 +2204,11 @@ class TextToAudioConverter:
                     if not output_mp3.exists() or output_mp3.stat().st_size == 0:
                         print(f"  ⚠️ Output missing for processed file: {f.name}")
                         unprocessed.append(f)
-                    else:
-                        # Check for missing audio segments (cover or paragraphs)
-                        seg_prefix = f"{f.stem}{lang_suffix}_{self.api}"
-                        seg_dir = f.parent / "audio"
-                        has_missing = False
-                        if seg_dir.exists():
-                            cover_seg = seg_dir / f"{seg_prefix}_slide_001.mp3"
-                            if not cover_seg.exists() or cover_seg.stat().st_size == 0:
-                                has_missing = True
-                            else:
-                                seg_count = sum(
-                                    1 for sf in seg_dir.glob(f"{seg_prefix}_slide_*.mp3")
-                                    if sf.stat().st_size > 0 and sf.name != cover_seg.name
-                                )
-                                if seg_count < 1:
-                                    has_missing = True
-                        else:
-                            has_missing = True
-                        if has_missing:
-                            print(f"  ⚠️ Missing audio segments for processed file: {f.name}")
-                            unprocessed.append(f)
+                    elif HashManager is not None and AudioFragmentManager is not None:
+                        # In incremental mode, always include processed files so
+                        # convert_file_incremental can check for missing segments.
+                        # It only regenerates what's missing — no wasted API calls.
+                        unprocessed.append(f)
             files = unprocessed
         
         if not files:
